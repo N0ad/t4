@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -18,17 +17,22 @@ int size_arr;
 #define at(arr, x, y) (arr[(x)*(n)+(y)])
 
 
-__global__ void iterate(double *F, double *Fnew, double* razn, int* size){
-
+__global__ void iterate(double *F, double *Fnew, int* size){
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int n = *size;
 
-    if (j == 0 || i == 0 || i == n - 1 || j == n - 1) return;
-
+    if (j <= 0 || i <= 0 || i >= n - 1 || j >= n - 1) return;
     at(Fnew, i, j) = 0.25 * (at(F, i + 1, j) + at(F, i - 1, j) + at(F, i, j + 1) + at(F, i, j - 1));
-    at(razn, i, j) = fabs(at(F, i, j) -
-    at(Fnew, i, j));
+}
+
+__global__ void razn_arr(double *F, double *Fnew, double* razn, int* size){
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int n = *size;
+
+    if (j <= 0 || i <= 0 || i >= n - 1 || j >= n - 1) return;
+    at(razn, i, j) = fabs(at(F, i, j) - at(Fnew, i, j));
 }
 
 int main(int argc, char *argv[]) {
@@ -56,7 +60,7 @@ int main(int argc, char *argv[]) {
     }
     for (int i = 1; i < size_arr - 1; i++) {
         for (int j = 1; j < size_arr - 1; j++) {
-            arr[i * size_arr + j] = 0;
+            arr[i * size_arr + j] = 20;
         }
     }
 
@@ -72,11 +76,15 @@ int main(int argc, char *argv[]) {
     cout << "initialisation: " << msec << "\n";
 
 
-    dim3 threadPerBlock = dim3(32, 32);
-    dim3 blocksPerGrid = dim3((size_arr + 31) / 32, (size_arr + 31) / 32);
+    // dim3 threadPerBlock = dim3(32, 32);
+    // dim3 blocksPerGrid = dim3((size_arr + 31) / 32, (size_arr + 31) / 32);
 
     double *d_err;
     cudaMalloc(&d_err, sizeof(double));
+
+    int* size_arr_d;
+    cudaMalloc(&size_arr_d, sizeof(int));
+    cudaMemcpy(size_arr_d, &size_arr, sizeof(int), cudaMemcpyHostToDevice);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -85,6 +93,7 @@ int main(int argc, char *argv[]) {
 
     int iters = 0;
     double err = 1;
+    cudaMemcpy(d_err, &err, sizeof(double), cudaMemcpyHostToDevice);
 
     void* d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
@@ -92,17 +101,16 @@ int main(int argc, char *argv[]) {
     cudaMalloc(&d_temp_storage, temp_storage_bytes);
 
 
-    int* size_arr_d;
-    cudaMalloc(&size_arr_d, sizeof(int));
-    cudaMemcpy(size_arr_d, &size_arr, sizeof(int), cudaMemcpyHostToDevice);
-
-
     cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
 
+    dim3 threadPerBlock = dim3(32, 32);
+    dim3 blocksPerGrid = dim3((size_arr + 31) / 32, (size_arr + 31) / 32);
+
     for(int i = 0; i < 50; i++){
-        iterate<<<blocksPerGrid, threadPerBlock, 0, stream>>>(d_arr, d_new_arr, razn, size_arr_d);
-        iterate<<<blocksPerGrid, threadPerBlock, 0, stream>>>(d_new_arr, d_arr, razn, size_arr_d);
+        iterate<<<blocksPerGrid, threadPerBlock, 0, stream>>>(d_arr, d_new_arr, size_arr_d);
+        iterate<<<blocksPerGrid, threadPerBlock, 0, stream>>>(d_new_arr, d_arr, size_arr_d);
     }
+    razn_arr<<<blocksPerGrid, threadPerBlock, 0, stream>>>(d_arr, d_new_arr, razn, size_arr_d);
 
     cudaStreamEndCapture(stream, &graph);
     cudaGraphInstantiate(&instance, graph, NULL, NULL, 0);
@@ -120,9 +128,12 @@ int main(int argc, char *argv[]) {
         iters = iters + 100;
     }
 
-    #ifdef NVPPROF_
+    #ifdef NVPROF_
     nvtxRangePop();
     #endif
+
+    cudaGraphDestroy(graph);
+    cudaStreamDestroy(stream);
 
     auto nelapsed = chrono::high_resolution_clock::now() - nstart;
     msec = chrono::duration_cast<chrono::microseconds>(nelapsed).count();
@@ -130,14 +141,6 @@ int main(int argc, char *argv[]) {
 
     cout << "Result\n";
     cout << "iterations: " << iters << " error: " << err << "\n";
-
-    cudaMemcpy(arr, d_arr, size_byte, cudaMemcpyDeviceToHost);
-// for (int i = 0; i < size_arr; i++){
-// for (int j = 0; j < size_arr; j++){
-// cout « arr[i * size_arr + j] « " ";
-// }
-// cout « "\n";
-// }
 
     delete[] arr;
 
